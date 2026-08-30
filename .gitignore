@@ -1,0 +1,32 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Node / React
+frontend/node_modules/
+frontend/dist/
+
+# Runtime/cache
+.cache/
+runs/
+
+# Local datasets
+data/dataset/
+
+# Model weights
+*.pt
+*.pth
+*.onnx
+
+# Environment files
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

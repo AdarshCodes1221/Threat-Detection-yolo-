@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="280" viewBox="0 0 1200 280" role="img" aria-labelledby="title description">
+  <title id="title">Research Workflow</title>
+  <desc id="description">Four independent stages: prepare data, train variants, evaluate evidence, and require human review.</desc>
+  <rect width="1200" height="280" rx="18" fill="#F5F7FA" />
+  <text x="600" y="52" fill="#0B1F33" font-family="Georgia, Times New Roman, serif" font-size="29" font-weight="700" text-anchor="middle">RESEARCH WORKFLOW</text>
+
+  <g opacity="0.78">
+    <rect x="50" y="88" width="250" height="142" rx="12" fill="#0B1F33" />
+    <text x="175" y="130" fill="#C7A75B" font-family="Arial, Helvetica, sans-serif" font-size="17" font-weight="700" text-anchor="middle">01 DATA</text>
+    <text x="175" y="169" fill="#F4EFE6" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="700" text-anchor="middle">Prepare and label</text>
+    <text x="175" y="202" fill="#D8DEE7" font-family="Arial, Helvetica, sans-serif" font-size="16" text-anchor="middle">Train, validation, test</text>
+    <animate attributeName="opacity" values="0.78;1;0.78;0.78;0.78" keyTimes="0;0.09;0.22;0.58;1" dur="8s" repeatCount="indefinite" />
+  </g>
+  <g opacity="0.78">
+    <rect x="333" y="88" width="250" height="142" rx="12" fill="#132C46" />
+    <text x="458" y="130" fill="#C7A75B" font-family="Arial, Helvetica, sans-serif" font-size="17" font-weight="700" text-anchor="middle">02 TRAIN</text>
+    <text x="458" y="169" fill="#F4EFE6" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="700" text-anchor="middle">Compare variants</text>
+    <text x="458" y="202" fill="#D8DEE7" font-family="Arial, Helvetica, sans-serif" font-size="16" text-anchor="middle">YOLO11n through YOLO11l</text>
+    <animate attributeName="opacity" values="0.78;0.78;1;0.78;0.78" keyTimes="0;0.25;0.38;0.52;1" dur="8s" repeatCount="indefinite" />
+  </g>
+  <g opacity="0.78">
+    <rect x="616" y="88" width="250" height="142" rx="12" fill="#30475E" />
+    <text x="741" y="130" fill="#F5D58A" font-family="Arial, Helvetica, sans-serif" font-size="17" font-weight="700" text-anchor="middle">03 EVALUATE</text>
+    <text x="741" y="169" fill="#F4EFE6" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="700" text-anchor="middle">Test evidence</text>
+    <text x="741" y="202" fill="#D8DEE7" font-family="Arial, Helvetica, sans-serif" font-size="16" text-anchor="middle">Precision, recall, F1, mAP</text>
+    <animate attributeName="opacity" values="0.78;0.78;1;0.78;0.78" keyTimes="0;0.49;0.62;0.76;1" dur="8s" repeatCount="indefinite" />
+  </g>
+  <g opacity="0.78">
+    <rect x="899" y="88" width="250" height="142" rx="12" fill="#8C1D40" />
+    <text x="1024" y="130" fill="#F5D58A" font-family="Arial, Helvetica, sans-serif" font-size="17" font-weight="700" text-anchor="middle">04 REVIEW</text>
+    <text x="1024" y="169" fill="#F4EFE6" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="700" text-anchor="middle">Require a human</text>
+    <text x="1024" y="202" fill="#F4EFE6" font-family="Arial, Helvetica, sans-serif" font-size="16" text-anchor="middle">Context before action</text>
+    <animate attributeName="opacity" values="0.78;0.78;1;0.78;0.78" keyTimes="0;0.73;0.86;0.98;1" dur="8s" repeatCount="indefinite" />
+  </g>
+</svg>

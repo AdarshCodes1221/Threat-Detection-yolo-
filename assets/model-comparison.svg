@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520" role="img" aria-labelledby="title description">
+  <title id="title">YOLO11 Test-Set Model Comparison</title>
+  <desc id="description">A table comparing precision, recall, F1, mAP50, and mAP50-95 for five YOLO11 variants. YOLO11s is selected.</desc>
+  <rect width="1200" height="520" rx="18" fill="#F5F7FA" />
+  <text x="600" y="53" fill="#0B1F33" font-family="Georgia, Times New Roman, serif" font-size="29" font-weight="700" text-anchor="middle">HELD-OUT TEST-SET COMPARISON</text>
+  <text x="600" y="82" fill="#526273" font-family="Arial, Helvetica, sans-serif" font-size="15" text-anchor="middle">All values use the final 314-image test split</text>
+
+  <rect x="48" y="108" width="1104" height="54" rx="8" fill="#0B1F33" />
+  <text x="82" y="142" fill="#F4EFE6" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="700">MODEL</text>
+  <text x="435" y="142" fill="#F4EFE6" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="700" text-anchor="middle">PRECISION</text>
+  <text x="595" y="142" fill="#F4EFE6" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="700" text-anchor="middle">RECALL</text>
+  <text x="735" y="142" fill="#F4EFE6" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="700" text-anchor="middle">F1</text>
+  <text x="875" y="142" fill="#F4EFE6" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="700" text-anchor="middle">mAP50</text>
+  <text x="1035" y="142" fill="#F4EFE6" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="700" text-anchor="middle">mAP50-95</text>
+
+  <rect x="48" y="178" width="1104" height="58" rx="8" fill="#E7ECF1" />
+  <text x="82" y="214" fill="#0B1F33" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="700">YOLO11n</text>
+  <text x="435" y="214" fill="#0B1F33" font-family="Arial, Helvetica, sans-serif" font-size="18" text-anchor="middle">0.81</text>
+  <text x="595" y="214" fill="#0B1F33" font-family="Arial, Helvetica, sans-serif" font-size="18" text-anchor="middle">0.69</text>
+  <text x="735" y="214" fill="#0B1F33" font-family="Arial, Helvetica, sans-serif" font-size="18" text-anchor="middle">0.74</text>
+  <text x="875" y="214" fill="#0B1F33" font-family="Arial, Helvetica, sans-serif" font-size="18" text-anchor="middle">0.78</text>
+  <text x="1035" y="214" fill="#0B1F33" font-family="Arial, Helvetica, sans-serif" font-size="18" text-anchor="middle">0.60</text>
+
+  <g opacity="0.94">
+    <rect x="48" y="248" width="1104" height="66" rx="8" fill="#8C1D40" />
+    <text x="82" y="288" fill="#F4EFE6" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="700">YOLO11s</text>
+    <text x="290" y="288" fill="#F5D58A" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="700">SELECTED</text>
+    <text x="435" y="288" fill="#F4EFE6" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="700" text-anchor="middle">0.87</text>
+    <text x="595" y="288" fill="#F4EFE6" font-family="Arial, Helvetica, sans-serif" font-size="19" text-anchor="middle">0.69</text>
+    <text x="735" y="288" fill="#F4EFE6" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="700" text-anchor="middle">0.77</text>
+    <text x="875" y="288" fill="#F4EFE6" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="700" text-anchor="middle">0.80</text>
+    <text x="1035" y="288" fill="#F4EFE6" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="700" text-anchor="middle">0.64</text>
+    <animate attributeName="opacity" values="0.94;1;0.94" dur="4s" repeatCount="indefinite" />
+  </g>
+
+  <rect x="48" y="326" width="1104" height="58" rx="8" fill="#E7ECF1" />
+  <text x="82" y="362" fill="#0B1F33" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="700">YOLO11s preprocessing</text>
+  <text x="435" y="362" fill="#0B1F33" font-family="Arial, Helvetica, sans-serif" font-size="18" text-anchor="middle">0.78</text>
+  <text x="595" y="362" fill="#0B1F33" font-family="Arial, Helvetica, sans-serif" font-size="18" text-anchor="middle">0.71</text>
+  <text x="735" y="362" fill="#0B1F33" font-family="Arial, Helvetica, sans-serif" font-size="18" text-anchor="middle">0.74</text>
+  <text x="875" y="362" fill="#0B1F33" font-family="Arial, Helvetica, sans-serif" font-size="18" text-anchor="middle">0.79</text>
+  <text x="1035" y="362" fill="#0B1F33" font-family="Arial, Helvetica, sans-serif" font-size="18" text-anchor="middle">0.62</text>
+
+  <rect x="48" y="396" width="1104" height="48" rx="8" fill="#E7ECF1" />
+  <text x="82" y="427" fill="#0B1F33" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="700">YOLO11m</text>
+  <text x="435" y="427" fill="#0B1F33" font-family="Arial, Helvetica, sans-serif" font-size="18" text-anchor="middle">0.78</text>
+  <text x="595" y="427" fill="#0B1F33" font-family="Arial, Helvetica, sans-serif" font-size="18" text-anchor="middle">0.69</text>
+  <text x="735" y="427" fill="#0B1F33" font-family="Arial, Helvetica, sans-serif" font-size="18" text-anchor="middle">0.73</text>
+  <text x="875" y="427" fill="#0B1F33" font-family="Arial, Helvetica, sans-serif" font-size="18" text-anchor="middle">0.76</text>
+  <text x="1035" y="427" fill="#0B1F33" font-family="Arial, Helvetica, sans-serif" font-size="18" text-anchor="middle">0.59</text>
+
+  <rect x="48" y="456" width="1104" height="48" rx="8" fill="#E7ECF1" />
+  <text x="82" y="487" fill="#0B1F33" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="700">YOLO11l</text>
+  <text x="435" y="487" fill="#0B1F33" font-family="Arial, Helvetica, sans-serif" font-size="18" text-anchor="middle">0.80</text>
+  <text x="595" y="487" fill="#0B1F33" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="700" text-anchor="middle">0.72</text>
+  <text x="735" y="487" fill="#0B1F33" font-family="Arial, Helvetica, sans-serif" font-size="18" text-anchor="middle">0.76</text>
+  <text x="875" y="487" fill="#0B1F33" font-family="Arial, Helvetica, sans-serif" font-size="18" text-anchor="middle">0.79</text>
+  <text x="1035" y="487" fill="#0B1F33" font-family="Arial, Helvetica, sans-serif" font-size="18" text-anchor="middle">0.63</text>
+</svg>

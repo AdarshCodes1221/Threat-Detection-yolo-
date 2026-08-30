@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="title description">
+  <title id="title">YOLO11 Dangerous-Person Detection</title>
+  <desc id="description">Academic computer-vision research project with dataset, model, evaluation, and human-review measures.</desc>
+  <rect width="1200" height="360" rx="20" fill="#0B1F33" />
+  <rect x="44" y="42" width="1112" height="276" rx="16" fill="#132C46" stroke="#C7A75B" stroke-width="2" />
+  <text x="600" y="105" fill="#F4EFE6" font-family="Georgia, Times New Roman, serif" font-size="42" font-weight="700" text-anchor="middle">YOLO11 DANGEROUS-PERSON DETECTION</text>
+  <text x="600" y="145" fill="#D8DEE7" font-family="Arial, Helvetica, sans-serif" font-size="21" text-anchor="middle">PUBLIC-AREA COMPUTER VISION RESEARCH</text>
+
+  <g opacity="0.82">
+    <rect x="78" y="185" width="235" height="94" rx="10" fill="#0B1F33" />
+    <text x="196" y="221" fill="#C7A75B" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="700" text-anchor="middle">DATASET</text>
+    <text x="196" y="257" fill="#F4EFE6" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="700" text-anchor="middle">3,140 IMAGES</text>
+    <animate attributeName="opacity" values="0.82;1;0.82;0.82;0.82" keyTimes="0;0.10;0.24;0.60;1" dur="8s" repeatCount="indefinite" />
+  </g>
+  <g opacity="0.82">
+    <rect x="348" y="185" width="235" height="94" rx="10" fill="#0B1F33" />
+    <text x="466" y="221" fill="#C7A75B" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="700" text-anchor="middle">SELECTED MODEL</text>
+    <text x="466" y="257" fill="#F4EFE6" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="700" text-anchor="middle">YOLO11s</text>
+    <animate attributeName="opacity" values="0.82;0.82;1;0.82;0.82" keyTimes="0;0.24;0.38;0.54;1" dur="8s" repeatCount="indefinite" />
+  </g>
+  <g opacity="0.82">
+    <rect x="618" y="185" width="235" height="94" rx="10" fill="#0B1F33" />
+    <text x="736" y="221" fill="#C7A75B" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="700" text-anchor="middle">TEST mAP50</text>
+    <text x="736" y="257" fill="#F4EFE6" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="700" text-anchor="middle">0.80</text>
+    <animate attributeName="opacity" values="0.82;0.82;1;0.82;0.82" keyTimes="0;0.48;0.62;0.76;1" dur="8s" repeatCount="indefinite" />
+  </g>
+  <g opacity="0.82">
+    <rect x="888" y="185" width="235" height="94" rx="10" fill="#0B1F33" />
+    <text x="1006" y="221" fill="#C7A75B" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="700" text-anchor="middle">DECISION MODE</text>
+    <text x="1006" y="257" fill="#F4EFE6" font-family="Arial, Helvetica, sans-serif" font-size="25" font-weight="700" text-anchor="middle">HUMAN REVIEW</text>
+    <animate attributeName="opacity" values="0.82;0.82;1;0.82;0.82" keyTimes="0;0.72;0.86;0.98;1" dur="8s" repeatCount="indefinite" />
+  </g>
+</svg>

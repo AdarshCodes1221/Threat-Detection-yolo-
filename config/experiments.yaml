@@ -1,0 +1,39 @@
+shared:
+  epochs: 150
+  batch: 8
+  image_size: 832
+  optimizer: auto
+  recorded_device: NVIDIA Tesla T4
+
+variants:
+  yolo11n:
+    model: yolo11n.pt
+    patience: 35
+    completed_epochs: 109
+  yolo11s:
+    model: yolo11s.pt
+    patience: 35
+    completed_epochs: 132
+  yolo11s_preprocessing:
+    model: yolo11s.pt
+    patience: 35
+    completed_epochs: 150
+    recorded_parameters:
+      fliplr: 0.5
+      flipud: 0.0
+      degrees: 5
+      translate: 0.1
+      scale: 0.5
+      hsv_h: 0.015
+      hsv_s: 0.5
+      hsv_v: 0.4
+      mosaic: 0.7
+      mixup: 0.05
+  yolo11m:
+    model: yolo11m.pt
+    patience: 40
+    completed_epochs: 150
+  yolo11l:
+    model: yolo11l.pt
+    patience: 40
+    completed_epochs: 150
