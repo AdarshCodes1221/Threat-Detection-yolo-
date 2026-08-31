@@ -494,6 +494,11 @@ function App() {
             );
 
 
+          const personId = detection.person_id || detection.associated_person_id || null;
+          const weaponId = detection.weapon_id || null;
+          const phoneId = detection.phone_id || null;
+          const associatedPersonId = detection.associated_person_id || personId || null;
+
           const event = {
 
             id:
@@ -522,12 +527,20 @@ function App() {
 
             type:
               detection.is_threat
-                ? "Potential threat"
+                ? `THREAT EVENT ${detection.event_id || ""}`.trim()
                 : detection.is_person
-                  ? "Person"
-                  : className,
+                  ? `P-${String((personId || trackId || "")).replace(/[^0-9]/g, "") || "??"}`
+                  : className === "weapon"
+                    ? `W-${String((weaponId || trackId || "")).replace(/[^0-9]/g, "") || "??"}`
+                    : className === "phone"
+                      ? `PH-${String((phoneId || trackId || "")).replace(/[^0-9]/g, "") || "??"}`
+                      : className,
 
             className,
+            personId,
+            weaponId,
+            phoneId,
+            associatedPersonId,
 
             confidence:
               Number(

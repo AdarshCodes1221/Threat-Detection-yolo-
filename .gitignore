@@ -30,3 +30,31 @@ data/dataset/
 # OS
 .DS_Store
 Thumbs.db
+# Local environments
+.venv/
+frontend/node_modules/
+
+# Datasets and training outputs
+data/
+runs/
+
+# Model weights
+*.pt
+*.pth
+*.onnx
+
+# Runtime evidence
+events/
+
+# Local test images
+dual_model_test*.jpg
+dual_model_test*.jpeg
+dual_model_test*.png
+
+# Local backup copies
+backend/detector_backup_before_dual_model.py
+backend/detector_before_research_upgrade.py
+
+# Python cache
+__pycache__/
+*.pyc

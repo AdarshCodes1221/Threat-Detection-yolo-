@@ -11,19 +11,32 @@ from ultralytics import YOLO
 
 
 # ============================================================
-# PATHS
+# PROJECT
 # ============================================================
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-TRAINED_MODEL = PROJECT_ROOT / "models" / "best.pt"
-BASE_MODEL = PROJECT_ROOT / "yolo11n.pt"
-
 MODEL_PATH = (
-    TRAINED_MODEL
-    if TRAINED_MODEL.exists()
-    else BASE_MODEL
+    PROJECT_ROOT
+    / "models"
+    / "person_weapon_phone_best.pt"
 )
+
+TRACKER_CONFIG = (
+    PROJECT_ROOT
+    / "config"
+    / "botsort_reid.yaml"
+)
+
+PERSON_MEMORY_TTL = 25.0
+MAX_PERSON_MEMORY = 100
+THREAT_CONFIRMATION_FRAMES = 2
+THREAT_RELEASE_FRAMES = 1
+ASSOCIATION_THRESHOLD = 0.50
+PERSON_CONFIDENCE = 0.25
+WEAPON_CONFIDENCE = 0.01
+PHONE_CONFIDENCE = 0.10
+REID_THRESHOLD = 0.82
 
 
 # ============================================================
@@ -38,6 +51,21 @@ DEVICE = (
 
 
 # ============================================================
+# MODEL CLASSES
+# ============================================================
+
+PERSON_CLASS_ID = 0
+WEAPON_CLASS_ID = 1
+PHONE_CLASS_ID = 2
+
+CLASS_NAMES = {
+    PERSON_CLASS_ID: "person",
+    WEAPON_CLASS_ID: "weapon",
+    PHONE_CLASS_ID: "phone",
+}
+
+
+# ============================================================
 # DETECTOR
 # ============================================================
 
@@ -45,24 +73,114 @@ class ThreatDetector:
 
     def __init__(
         self,
-        confidence: float = 0.35,
+        confidence: float = 0.25,
+        weapon_confidence: float = 0.01,
+        phone_confidence: float = 0.10,
     ) -> None:
 
-        self.confidence = confidence
+        self.confidence = float(confidence)
+        self.weapon_confidence = float(
+            weapon_confidence
+        )
+        self.phone_confidence = float(
+            phone_confidence
+        )
+        self.track_confidence = min(
+            self.confidence,
+            self.weapon_confidence,
+            self.phone_confidence,
+        )
+
         self.device = DEVICE
+        self.tracker_config = str(TRACKER_CONFIG)
+
+        # ----------------------------------------------------
+        # Identity / Re-ID settings
+        # ----------------------------------------------------
+
+        self.next_person_id = 1
+        self.next_weapon_id = 1
+        self.next_phone_id = 1
+
+        self.person_memory_ttl = PERSON_MEMORY_TTL
+        self.reid_threshold = REID_THRESHOLD
+        self.min_crop_size = 40
+        self.max_person_memory = MAX_PERSON_MEMORY
+
+        # ----------------------------------------------------
+        # Threat temporal confirmation
+        # ----------------------------------------------------
+
+        self.threat_required_frames = THREAT_CONFIRMATION_FRAMES
+        self.threat_release_frames = THREAT_RELEASE_FRAMES
+        self.association_threshold = ASSOCIATION_THRESHOLD
+
+        # stable person id -> state
+        self.person_memory: dict[
+            str,
+            dict[str, Any],
+        ] = {}
+
+        # ByteTrack id -> stable person id
+        self.track_to_person: dict[
+            int,
+            str,
+        ] = {}
+
+        # Stable weapon / phone IDs
+        self.weapon_track_to_id: dict[
+            int,
+            str,
+        ] = {}
+
+        self.phone_track_to_id: dict[
+            int,
+            str,
+        ] = {}
+
+        # Threat frame counters
+        self.threat_state: dict[
+            str,
+            dict[str, Any],
+        ] = {}
+        self.event_state: dict[
+            str,
+            dict[str, Any],
+        ] = {}
+        self.event_counter = 1
+
+        # ----------------------------------------------------
+        # Check model
+        # ----------------------------------------------------
 
         if not MODEL_PATH.exists():
+
             raise FileNotFoundError(
-                f"Model not found: {MODEL_PATH}"
+                "\n"
+                "============================================\n"
+                "MODEL NOT FOUND\n"
+                "============================================\n"
+                f"Expected:\n{MODEL_PATH}\n\n"
+                "Copy person_weapon_phone_best.pt into:\n"
+                f"{PROJECT_ROOT / 'models'}\n"
+                "============================================\n"
             )
 
+        # ----------------------------------------------------
+        # Load trained model
+        # ----------------------------------------------------
+
         print(
-            f"[MODEL] Loading: {MODEL_PATH}"
+            f"[MODEL] Loading trained 3-class model: {MODEL_PATH}"
         )
 
         self.model = YOLO(
             str(MODEL_PATH)
         )
+
+        # ----------------------------------------------------
+        # Read actual model names
+        # ----------------------------------------------------
 
         model_names = self.model.names
 
@@ -70,40 +188,74 @@ class ThreatDetector:
             model_names,
             dict,
         ):
-            self.names = model_names
+
+            self.names = {
+                int(k): str(v)
+                for k, v in model_names.items()
+            }
+
         else:
-            self.names = dict(
-                enumerate(
+
+            self.names = {
+                i: str(name)
+                for i, name in enumerate(
                     model_names
                 )
+            }
+
+        # ----------------------------------------------------
+        # Strict validation
+        # ----------------------------------------------------
+
+        required_names = {
+            0: "person",
+            1: "weapon",
+            2: "phone",
+        }
+
+        if set(self.names.keys()) != set(required_names.keys()):
+            raise RuntimeError(
+                "The trained model must expose exactly 3 classes: "
+                f"{required_names}. Loaded classes: {self.names}"
             )
 
-        print(
-            f"[MODEL] Classes: "
-            f"{len(self.names)}"
-        )
+        for class_id, expected_name in required_names.items():
+            actual_name = self.names.get(class_id)
+            if actual_name is None or str(actual_name).lower() != expected_name:
+                raise RuntimeError(
+                    "The trained model class mapping is invalid. "
+                    f"Expected {required_names}, got {self.names}."
+                )
 
         print(
-            f"[MODEL] Device: "
-            f"{self.device_name}"
+            f"[MODEL] Classes: {self.names}"
+        )
+        print(
+            f"[MODEL] Device: {self.device_name}"
+        )
+        print(
+            "[MODEL] Tracker: BoT-SORT + Re-ID"
         )
 
     # ========================================================
-    # INFORMATION
+    # PUBLIC INFORMATION
     # ========================================================
 
     @property
     def model_name(self) -> str:
+
         return MODEL_PATH.name
 
     @property
     def class_count(self) -> int:
+
         return len(self.names)
 
     @property
     def device_name(self) -> str:
 
         if torch.cuda.is_available():
+
             return torch.cuda.get_device_name(
                 0
             )
@@ -126,6 +278,11 @@ class ThreatDetector:
                 float(value),
             ),
         )
+        self.track_confidence = min(
+            self.confidence,
+            self.weapon_confidence,
+            self.phone_confidence,
+        )
 
     # ========================================================
     # CLASS NAME
@@ -136,53 +293,1060 @@ class ThreatDetector:
         class_id: int,
     ) -> str:
 
-        return str(
-            self.names.get(
-                class_id,
+        return self.names.get(
+            int(class_id),
+            CLASS_NAMES.get(
+                int(class_id),
                 f"class_{class_id}",
+            ),
+        )
+
+    # ========================================================
+    # IOU
+    # ========================================================
+
+    @staticmethod
+    def calculate_iou(
+        box_a,
+        box_b,
+    ) -> float:
+
+        ax1, ay1, ax2, ay2 = map(
+            float,
+            box_a,
+        )
+
+        bx1, by1, bx2, by2 = map(
+            float,
+            box_b,
+        )
+
+        ix1 = max(
+            ax1,
+            bx1,
+        )
+
+        iy1 = max(
+            ay1,
+            by1,
+        )
+
+        ix2 = min(
+            ax2,
+            bx2,
+        )
+
+        iy2 = min(
+            ay2,
+            by2,
+        )
+
+        iw = max(
+            0.0,
+            ix2 - ix1,
+        )
+
+        ih = max(
+            0.0,
+            iy2 - iy1,
+        )
+
+        intersection = (
+            iw * ih
+        )
+
+        area_a = (
+            max(
+                0.0,
+                ax2 - ax1,
+            )
+            *
+            max(
+                0.0,
+                ay2 - ay1,
+            )
+        )
+
+        area_b = (
+            max(
+                0.0,
+                bx2 - bx1,
+            )
+            *
+            max(
+                0.0,
+                by2 - by1,
+            )
+        )
+
+        union = (
+            area_a
+            + area_b
+            - intersection
+        )
+
+        if union <= 0.0:
+            return 0.0
+
+        return (
+            intersection
+            / union
+        )
+
+    # ========================================================
+    # BOX CENTER
+    # ========================================================
+
+    @staticmethod
+    def box_center(
+        box,
+    ) -> tuple[float, float]:
+
+        x1, y1, x2, y2 = map(
+            float,
+            box,
+        )
+
+        return (
+            (x1 + x2) / 2.0,
+            (y1 + y2) / 2.0,
+        )
+
+    # ========================================================
+    # OBJECT -> PERSON ASSOCIATION
+    # ========================================================
+
+    @staticmethod
+    def object_belongs_to_person(
+        object_box,
+        person_box,
+    ) -> bool:
+
+        ox1, oy1, ox2, oy2 = map(
+            float,
+            object_box,
+        )
+
+        px1, py1, px2, py2 = map(
+            float,
+            person_box,
+        )
+
+        person_width = max(
+            1.0,
+            px2 - px1,
+        )
+
+        person_height = max(
+            1.0,
+            py2 - py1,
+        )
+
+        # ----------------------------------------------------
+        # Expand person region moderately.
+        # ----------------------------------------------------
+
+        expanded_x1 = (
+            px1
+            - person_width * 0.20
+        )
+
+        expanded_y1 = (
+            py1
+            - person_height * 0.05
+        )
+
+        expanded_x2 = (
+            px2
+            + person_width * 0.20
+        )
+
+        expanded_y2 = (
+            py2
+            + person_height * 0.05
+        )
+
+        object_center_x = (
+            ox1 + ox2
+        ) / 2.0
+
+        object_center_y = (
+            oy1 + oy2
+        ) / 2.0
+
+        # ----------------------------------------------------
+        # Center inside expanded person box
+        # ----------------------------------------------------
+
+        if (
+            expanded_x1
+            <= object_center_x
+            <= expanded_x2
+            and
+            expanded_y1
+            <= object_center_y
+            <= expanded_y2
+        ):
+
+            return True
+
+        # ----------------------------------------------------
+        # IoU fallback
+        # ----------------------------------------------------
+
+        iou = ThreatDetector.calculate_iou(
+            (
+                ox1,
+                oy1,
+                ox2,
+                oy2,
+            ),
+            (
+                expanded_x1,
+                expanded_y1,
+                expanded_x2,
+                expanded_y2,
+            ),
+        )
+
+        if iou >= 0.01:
+
+            return True
+
+        return False
+
+    # ========================================================
+    # PERSON CROP
+    # ========================================================
+
+    @staticmethod
+    def crop_box(
+        frame: np.ndarray,
+        bbox,
+    ) -> np.ndarray | None:
+
+        if frame is None:
+            return None
+
+        height, width = (
+            frame.shape[:2]
+        )
+
+        x1, y1, x2, y2 = map(
+            int,
+            bbox,
+        )
+
+        x1 = max(
+            0,
+            min(
+                width - 1,
+                x1,
+            ),
+        )
+
+        y1 = max(
+            0,
+            min(
+                height - 1,
+                y1,
+            ),
+        )
+
+        x2 = max(
+            x1 + 1,
+            min(
+                width,
+                x2,
+            ),
+        )
+
+        y2 = max(
+            y1 + 1,
+            min(
+                height,
+                y2,
+            ),
+        )
+
+        crop = frame[
+            y1:y2,
+            x1:x2,
+        ]
+
+        if (
+            crop is None
+            or crop.size == 0
+        ):
+
+            return None
+
+        return crop
+
+    # ========================================================
+    # APPEARANCE FEATURE
+    # ========================================================
+
+    def extract_person_feature(
+        self,
+        frame: np.ndarray,
+        bbox,
+    ) -> np.ndarray | None:
+
+        crop = self.crop_box(
+            frame,
+            bbox,
+        )
+
+        if crop is None:
+            return None
+
+        h, w = crop.shape[:2]
+
+        if (
+            h < self.min_crop_size
+            or w < self.min_crop_size
+        ):
+
+            return None
+
+        # ----------------------------------------------------
+        # Normalize geometry.
+        # ----------------------------------------------------
+
+        resized = cv2.resize(
+            crop,
+            (
+                64,
+                128,
+            ),
+            interpolation=cv2.INTER_AREA,
+        )
+
+        # ----------------------------------------------------
+        # HSV histogram
+        #
+        # This captures clothing/appearance information.
+        # ----------------------------------------------------
+
+        hsv = cv2.cvtColor(
+            resized,
+            cv2.COLOR_BGR2HSV,
+        )
+
+        hsv_hist = cv2.calcHist(
+            [hsv],
+            [0, 1],
+            None,
+            [16, 8],
+            [
+                0,
+                180,
+                0,
+                256,
+            ],
+        )
+
+        hsv_hist = cv2.normalize(
+            hsv_hist,
+            hsv_hist,
+        ).flatten()
+
+        # ----------------------------------------------------
+        # RGB histogram
+        # ----------------------------------------------------
+
+        rgb = cv2.cvtColor(
+            resized,
+            cv2.COLOR_BGR2RGB,
+        )
+
+        rgb_hist = cv2.calcHist(
+            [rgb],
+            [0, 1],
+            None,
+            [8, 8],
+            [
+                0,
+                256,
+                0,
+                256,
+            ],
+        )
+
+        rgb_hist = cv2.normalize(
+            rgb_hist,
+            rgb_hist,
+        ).flatten()
+
+        # ----------------------------------------------------
+        # Grayscale appearance descriptor
+        # ----------------------------------------------------
+
+        gray = cv2.cvtColor(
+            resized,
+            cv2.COLOR_BGR2GRAY,
+        )
+
+        small_gray = cv2.resize(
+            gray,
+            (
+                16,
+                32,
+            ),
+            interpolation=cv2.INTER_AREA,
+        )
+
+        gray_feature = (
+            small_gray.astype(
+                np.float32
+            )
+            / 255.0
+        ).flatten()
+
+        # ----------------------------------------------------
+        # Combine
+        # ----------------------------------------------------
+
+        feature = np.concatenate(
+            [
+                hsv_hist.astype(
+                    np.float32
+                ),
+                rgb_hist.astype(
+                    np.float32
+                ),
+                gray_feature,
+            ]
+        )
+
+        # ----------------------------------------------------
+        # L2 normalize
+        # ----------------------------------------------------
+
+        norm = np.linalg.norm(
+            feature
+        )
+
+        if norm <= 1e-8:
+
+            return None
+
+        return (
+            feature
+            / norm
+        ).astype(
+            np.float32
+        )
+
+    # ========================================================
+    # COSINE SIMILARITY
+    # ========================================================
+
+    @staticmethod
+    def cosine_similarity(
+        feature_a: np.ndarray,
+        feature_b: np.ndarray,
+    ) -> float:
+
+        if (
+            feature_a is None
+            or feature_b is None
+        ):
+
+            return -1.0
+
+        norm_a = np.linalg.norm(
+            feature_a
+        )
+
+        norm_b = np.linalg.norm(
+            feature_b
+        )
+
+        if (
+            norm_a <= 1e-8
+            or norm_b <= 1e-8
+        ):
+
+            return -1.0
+
+        return float(
+            np.dot(
+                feature_a,
+                feature_b,
+            )
+            / (
+                norm_a
+                * norm_b
             )
         )
 
     # ========================================================
-    # PERSON
+    # CREATE PERSON ID
     # ========================================================
 
-    @staticmethod
-    def is_person_class(
-        class_name: str,
-    ) -> bool:
+    def create_person_id(self) -> str:
 
-        normalized = (
-            class_name
-            .strip()
-            .lower()
+        person_id = (
+            f"P-{self.next_person_id:02d}"
         )
 
-        return normalized in {
-            "person",
-            "normal_person",
-            "potentially_dangerous_person",
-        }
+        self.next_person_id += 1
+
+        return person_id
 
     # ========================================================
-    # THREAT
+    # UPDATE PERSON MEMORY
     # ========================================================
 
-    @staticmethod
-    def is_threat_class(
-        class_name: str,
-    ) -> bool:
+    def update_person_memory(
+        self,
+        person_id: str,
+        frame: np.ndarray,
+        bbox,
+        feature: np.ndarray | None,
+        track_id: int | None,
+        now: float,
+    ) -> None:
 
-        normalized = (
-            class_name
-            .strip()
-            .lower()
+        state = self.person_memory.get(
+            person_id
+        )
+
+        if state is None:
+
+            state = {
+                "person_id": person_id,
+                "feature": feature,
+                "bbox": list(bbox),
+                "track_id": track_id,
+                "first_seen": now,
+                "last_seen": now,
+                "seen_count": 0,
+            }
+
+            self.person_memory[
+                person_id
+            ] = state
+
+        else:
+
+            # -----------------------------------------------
+            # Update appearance gradually.
+            # -----------------------------------------------
+
+            old_feature = state.get(
+                "feature"
+            )
+
+            if (
+                feature is not None
+                and old_feature is not None
+            ):
+
+                blended = (
+                    old_feature * 0.75
+                    +
+                    feature * 0.25
+                )
+
+                norm = np.linalg.norm(
+                    blended
+                )
+
+                if norm > 1e-8:
+
+                    state["feature"] = (
+                        blended
+                        / norm
+                    ).astype(
+                        np.float32
+                    )
+
+            elif feature is not None:
+
+                state["feature"] = feature
+
+            state["bbox"] = list(
+                bbox
+            )
+
+            state["track_id"] = track_id
+
+            state["last_seen"] = now
+
+        state["seen_count"] = (
+            int(
+                state.get(
+                    "seen_count",
+                    0,
+                )
+            )
+            + 1
+        )
+
+    # ========================================================
+    # CLEAN EXPIRED PERSONS
+    # ========================================================
+
+    def cleanup_person_memory(
+        self,
+        now: float,
+    ) -> None:
+
+        expired = []
+
+        for person_id, state in (
+            self.person_memory.items()
+        ):
+
+            last_seen = float(
+                state.get(
+                    "last_seen",
+                    now,
+                )
+            )
+
+            if (
+                now - last_seen
+                > self.person_memory_ttl
+            ):
+
+                expired.append(
+                    person_id
+                )
+
+        for person_id in expired:
+
+            self.person_memory.pop(
+                person_id,
+                None,
+            )
+
+            # Remove old track mappings.
+            old_tracks = [
+                track_id
+                for track_id, pid
+                in self.track_to_person.items()
+                if pid == person_id
+            ]
+
+            for track_id in old_tracks:
+
+                self.track_to_person.pop(
+                    track_id,
+                    None,
+                )
+
+        # ----------------------------------------------------
+        # Hard cap.
+        # ----------------------------------------------------
+
+        if (
+            len(self.person_memory)
+            > self.max_person_memory
+        ):
+
+            ordered = sorted(
+                self.person_memory.items(),
+                key=lambda item:
+                    float(
+                        item[1].get(
+                            "last_seen",
+                            0.0,
+                        )
+                    ),
+            )
+
+            remove_count = (
+                len(self.person_memory)
+                - self.max_person_memory
+            )
+
+            for person_id, _ in ordered[
+                :remove_count
+            ]:
+
+                self.person_memory.pop(
+                    person_id,
+                    None,
+                )
+
+    # ========================================================
+    # ASSIGN STABLE PERSON ID
+    # ========================================================
+
+    def assign_person_id(
+        self,
+        frame: np.ndarray,
+        bbox,
+        track_id: int | None,
+        now: float,
+        reserved_person_ids: set[str],
+    ) -> tuple[str, float]:
+
+        # ----------------------------------------------------
+        # First try the current ByteTrack mapping.
+        # ----------------------------------------------------
+
+        if track_id is not None:
+
+            existing = (
+                self.track_to_person.get(
+                    track_id
+                )
+            )
+
+            if existing is not None:
+
+                feature = (
+                    self.extract_person_feature(
+                        frame,
+                        bbox,
+                    )
+                )
+
+                self.update_person_memory(
+                    existing,
+                    frame,
+                    bbox,
+                    feature,
+                    track_id,
+                    now,
+                )
+
+                reserved_person_ids.add(
+                    existing
+                )
+
+                return existing, 1.0
+
+        # ----------------------------------------------------
+        # Create current feature.
+        # ----------------------------------------------------
+
+        feature = (
+            self.extract_person_feature(
+                frame,
+                bbox,
+            )
+        )
+
+        # ----------------------------------------------------
+        # Search remembered people.
+        # ----------------------------------------------------
+
+        best_person = None
+        best_similarity = -1.0
+
+        if feature is not None:
+
+            for person_id, state in (
+                self.person_memory.items()
+            ):
+
+                if person_id in reserved_person_ids:
+                    continue
+
+                old_feature = state.get(
+                    "feature"
+                )
+
+                if old_feature is None:
+                    continue
+
+                similarity = (
+                    self.cosine_similarity(
+                        feature,
+                        old_feature,
+                    )
+                )
+
+                # Don't match an extremely old memory.
+                age = (
+                    now
+                    - float(
+                        state.get(
+                            "last_seen",
+                            now,
+                        )
+                    )
+                )
+
+                if (
+                    age
+                    > self.person_memory_ttl
+                ):
+
+                    continue
+
+                if (
+                    similarity
+                    > best_similarity
+                ):
+
+                    best_similarity = (
+                        similarity
+                    )
+
+                    best_person = person_id
+
+        # ----------------------------------------------------
+        # Re-identification match
+        # ----------------------------------------------------
+
+        if (
+            best_person is not None
+            and
+            best_similarity
+            >= self.reid_threshold
+        ):
+
+            person_id = best_person
+
+        # ----------------------------------------------------
+        # New person
+        # ----------------------------------------------------
+
+        else:
+
+            person_id = (
+                self.create_person_id()
+            )
+
+            best_similarity = 0.0
+
+        # ----------------------------------------------------
+        # Save mapping.
+        # ----------------------------------------------------
+
+        if track_id is not None:
+
+            self.track_to_person[
+                track_id
+            ] = person_id
+
+        self.update_person_memory(
+            person_id,
+            frame,
+            bbox,
+            feature,
+            track_id,
+            now,
+        )
+
+        reserved_person_ids.add(
+            person_id
         )
 
         return (
-            normalized
-            == "potentially_dangerous_person"
+            person_id,
+            float(
+                best_similarity
+            ),
         )
+
+    # ========================================================
+    # WEAPON ID
+    # ========================================================
+
+    def get_weapon_id(
+        self,
+        track_id: int | None,
+    ) -> str:
+
+        if track_id is not None:
+
+            existing = (
+                self.weapon_track_to_id.get(
+                    track_id
+                )
+            )
+
+            if existing is not None:
+
+                return existing
+
+        weapon_id = (
+            f"W-{self.next_weapon_id:02d}"
+        )
+
+        self.next_weapon_id += 1
+
+        if track_id is not None:
+
+            self.weapon_track_to_id[
+                track_id
+            ] = weapon_id
+
+        return weapon_id
+
+    # ========================================================
+    # PHONE ID
+    # ========================================================
+
+    def get_phone_id(
+        self,
+        track_id: int | None,
+    ) -> str:
+
+        if track_id is not None:
+
+            existing = (
+                self.phone_track_to_id.get(
+                    track_id
+                )
+            )
+
+            if existing is not None:
+
+                return existing
+
+        phone_id = (
+            f"PH-{self.next_phone_id:02d}"
+        )
+
+        self.next_phone_id += 1
+
+        if track_id is not None:
+
+            self.phone_track_to_id[
+                track_id
+            ] = phone_id
+
+        return phone_id
+
+    # ========================================================
+    # THREAT TEMPORAL STATE
+    # ========================================================
+
+    def update_threat_state(
+        self,
+        person_id: str,
+        has_weapon: bool,
+    ) -> bool:
+
+        state = self.threat_state.setdefault(
+            person_id,
+            {
+                "frames": 0,
+                "last_seen": time.time(),
+                "confirmed": False,
+            },
+        )
+
+        state["last_seen"] = time.time()
+
+        if has_weapon:
+            state["frames"] = int(state.get("frames", 0)) + 1
+        else:
+            state["frames"] = max(0, int(state.get("frames", 0)) - self.threat_release_frames)
+
+        confirmed = state["frames"] >= self.threat_required_frames
+        state["confirmed"] = confirmed
+        return confirmed
+
+    def _next_event_id(self, person_id: str) -> str:
+        date_dir = (PROJECT_ROOT / "events" / time.strftime("%Y-%m-%d"))
+        date_dir.mkdir(parents=True, exist_ok=True)
+        while True:
+            event_id = f"EVT-{self.event_counter:04d}_{person_id}"
+            folder = date_dir / event_id
+            if not folder.exists():
+                self.event_counter += 1
+                return event_id
+            self.event_counter += 1
+
+    def _save_event_evidence(
+        self,
+        frame: np.ndarray,
+        person_crop: np.ndarray,
+        person_id: str,
+        weapon_id: str | None,
+        person_confidence: float,
+        weapon_confidence: float,
+        confirmed_at: float,
+        first_seen: float,
+        last_seen: float,
+    ) -> tuple[str, str]:
+        date_dir = PROJECT_ROOT / "events" / time.strftime("%Y-%m-%d")
+        date_dir.mkdir(parents=True, exist_ok=True)
+
+        event_id = self._next_event_id(person_id)
+        event_dir = date_dir / event_id
+        event_dir.mkdir(parents=True, exist_ok=True)
+
+        full_frame_path = event_dir / "full_frame.jpg"
+        person_crop_path = event_dir / "person_crop.jpg"
+        event_json_path = event_dir / "event.json"
+
+        cv2.imwrite(str(full_frame_path), frame)
+        cv2.imwrite(str(person_crop_path), person_crop)
+
+        event_payload = {
+            "event_id": event_id,
+            "person_id": person_id,
+            "weapon_id": weapon_id,
+            "person_confidence": round(float(person_confidence), 4),
+            "weapon_confidence": round(float(weapon_confidence), 4),
+            "first_seen": round(float(first_seen), 3),
+            "confirmed_at": round(float(confirmed_at), 3),
+            "last_seen": round(float(last_seen), 3),
+            "full_frame": str(full_frame_path.relative_to(PROJECT_ROOT)),
+            "person_crop": str(person_crop_path.relative_to(PROJECT_ROOT)),
+            "threat_state": "CONFIRMED_THREAT",
+        }
+
+        event_json_path.write_text(json.dumps(event_payload, indent=2), encoding="utf-8")
+        return event_id, str(event_dir)
+
+    def get_threat_state(self, has_weapon: bool, confirmed_threat: bool, weapon_count: int) -> str:
+        if confirmed_threat:
+            return "CONFIRMED_THREAT"
+        if has_weapon:
+            if weapon_count >= self.threat_required_frames:
+                return "THREAT_CONFIRMING"
+            return "WEAPON_CANDIDATE"
+        return "NORMAL"
+
+    # ========================================================
+    # CLEAN THREAT STATE
+    # ========================================================
+
+    def cleanup_threat_state(
+        self,
+        now: float,
+    ) -> None:
+
+        expired = []
+
+        for person_id, state in (
+            self.threat_state.items()
+        ):
+
+            last_seen = float(
+                state.get(
+                    "last_seen",
+                    now,
+                )
+            )
+
+            if (
+                now - last_seen
+                > self.person_memory_ttl
+            ):
+
+                expired.append(
+                    person_id
+                )
+
+        for person_id in expired:
+
+            self.threat_state.pop(
+                person_id,
+                None,
+            )
 
     # ========================================================
     # PROCESS FRAME
@@ -196,38 +1360,144 @@ class ThreatDetector:
         started = time.perf_counter()
 
         # ----------------------------------------------------
-        # YOLO TRACK
+        # Validate frame.
         # ----------------------------------------------------
+
+        if frame is None:
+
+            raise ValueError(
+                "process_frame received an empty frame."
+            )
+
+        if not isinstance(
+            frame,
+            np.ndarray,
+        ):
+
+            raise TypeError(
+                "process_frame expects a NumPy image."
+            )
+
+        if frame.size == 0:
+
+            raise ValueError(
+                "process_frame received an empty NumPy image."
+            )
+
+        now = time.time()
+
+        height, width = (
+            frame.shape[:2]
+        )
+
+        # ----------------------------------------------------
+        # Cleanup memory.
+        # ----------------------------------------------------
+
+        self.cleanup_person_memory(
+            now
+        )
+
+        self.cleanup_threat_state(
+            now
+        )
+
+        # ====================================================
+        # YOLO + BoT-SORT + Re-ID
+        # ====================================================
 
         results = self.model.track(
             source=frame,
-            conf=self.confidence,
+            conf=self.track_confidence,
             device=self.device,
-            tracker="bytetrack.yaml",
+            tracker=self.tracker_config,
             persist=True,
-            imgsz=480,
+            imgsz=640,
             verbose=False,
         )
 
-        result = results[0]
+        result = results[0] if results else None
 
-        persons = 0
-        threats = 0
-        highest_confidence = 0.0
+        if result is None or result.boxes is None:
+            direct_results = self.model(
+                frame,
+                imgsz=640,
+                conf=0.01,
+                device=self.device,
+                verbose=False,
+            )
+            if direct_results:
+                result = direct_results[0]
 
-        detections: list[
+        if result is None or result.boxes is None:
+
+            return {
+                "frame": frame.copy(),
+                "persons": 0,
+                "weapons": 0,
+                "phones": 0,
+                "threats": 0,
+                "objects": 0,
+                "highest_confidence": 0.0,
+                "processing_ms": round(
+                    (
+                        time.perf_counter()
+                        - started
+                    )
+                    * 1000.0,
+                    2,
+                ),
+                "detections": [],
+                "model": self.model_name,
+                "device": (
+                    "CUDA"
+                    if torch.cuda.is_available()
+                    else "CPU"
+                ),
+            }
+
+        if result.boxes is not None:
+            tracked_classes = []
+            for box in result.boxes:
+                if box.cls is not None:
+                    tracked_classes.append(int(box.cls[0]))
+
+            if 1 not in tracked_classes and 2 not in tracked_classes:
+                direct_results = self.model(
+                    frame,
+                    imgsz=640,
+                    conf=0.01,
+                    device=self.device,
+                    verbose=False,
+                )
+                if direct_results:
+                    result = direct_results[0]
+
+        # ====================================================
+        # RAW OBJECT COLLECTIONS
+        # ====================================================
+
+        persons_raw: list[
             dict[str, Any]
         ] = []
 
-        # ----------------------------------------------------
-        # DETECTIONS
-        # ----------------------------------------------------
+        weapons_raw: list[
+            dict[str, Any]
+        ] = []
+
+        phones_raw: list[
+            dict[str, Any]
+        ] = []
+
+        highest_confidence = 0.0
+
+        # ====================================================
+        # READ YOLO DETECTIONS
+        # ====================================================
 
         if result.boxes is not None:
 
-            track_ids = (
-                result.boxes.id
-            )
+            track_ids = result.boxes.id
 
             for index, box in enumerate(
                 result.boxes
@@ -241,162 +1511,916 @@ class ThreatDetector:
                     box.conf[0]
                 )
 
-                class_name = (
-                    self.get_class_name(
-                        class_id
-                    )
+                # --------------------------------------------
+                # Per-class thresholds
+                # --------------------------------------------
+
+                if (
+                    class_id
+                    == WEAPON_CLASS_ID
+                    and
+                    confidence
+                    < self.weapon_confidence
+                ):
+
+                    continue
+
+                if (
+                    class_id
+                    == PHONE_CLASS_ID
+                    and
+                    confidence
+                    < self.phone_confidence
+                ):
+
+                    continue
+
+                if (
+                    class_id
+                    == PERSON_CLASS_ID
+                    and
+                    confidence
+                    < self.confidence
+                ):
+
+                    continue
+
+                # --------------------------------------------
+                # Bounding box
+                # --------------------------------------------
+
+                x1, y1, x2, y2 = [
+                    float(v)
+                    for v
+                    in box.xyxy[
+                        0
+                    ].tolist()
+                ]
+
+                x1 = max(
+                    0.0,
+                    min(
+                        float(width),
+                        x1,
+                    ),
                 )
 
-                is_person = (
-                    self.is_person_class(
-                        class_name
-                    )
+                y1 = max(
+                    0.0,
+                    min(
+                        float(height),
+                        y1,
+                    ),
                 )
 
-                is_threat = (
-                    self.is_threat_class(
-                        class_name
-                    )
+                x2 = max(
+                    0.0,
+                    min(
+                        float(width),
+                        x2,
+                    ),
                 )
 
-                if is_person:
-                    persons += 1
+                y2 = max(
+                    0.0,
+                    min(
+                        float(height),
+                        y2,
+                    ),
+                )
 
-                if is_threat:
-                    threats += 1
+                # --------------------------------------------
+                # ByteTrack ID
+                # --------------------------------------------
+
+                track_id = None
+
+                if track_ids is not None:
+
+                    try:
+
+                        track_id = int(
+                            track_ids[
+                                index
+                            ]
+                        )
+
+                    except Exception:
+
+                        track_id = None
+
+                detection = {
+                    "track_id":
+                        track_id,
+                    "class_id":
+                        class_id,
+                    "class_name":
+                        self.get_class_name(
+                            class_id
+                        ),
+                    "confidence":
+                        round(
+                            confidence,
+                            4,
+                        ),
+                    "bbox": [
+                        round(
+                            x1,
+                            2,
+                        ),
+                        round(
+                            y1,
+                            2,
+                        ),
+                        round(
+                            x2,
+                            2,
+                        ),
+                        round(
+                            y2,
+                            2,
+                        ),
+                    ],
+                }
 
                 highest_confidence = max(
                     highest_confidence,
                     confidence,
                 )
 
-                # --------------------------------------------
-                # TRACK ID
-                # --------------------------------------------
+                if (
+                    class_id
+                    == PERSON_CLASS_ID
+                ):
 
-                track_id = None
-
-                if track_ids is not None:
-                    track_id = int(
-                        track_ids[index]
+                    persons_raw.append(
+                        detection
                     )
 
-                # --------------------------------------------
-                # BOUNDING BOX
-                # --------------------------------------------
+                elif (
+                    class_id
+                    == WEAPON_CLASS_ID
+                ):
 
-                x1, y1, x2, y2 = [
-                    float(value)
-                    for value in
-                    box.xyxy[0].tolist()
-                ]
+                    weapons_raw.append(
+                        detection
+                    )
 
-                detections.append(
-                    {
-                        "track_id": track_id,
-                        "class_id": class_id,
-                        "class_name": class_name,
-                        "confidence": round(
-                            confidence,
-                            4,
-                        ),
-                        "is_person": is_person,
-                        "is_threat": is_threat,
-                        "bbox": [
-                            round(x1, 2),
-                            round(y1, 2),
-                            round(x2, 2),
-                            round(y2, 2),
-                        ],
-                    }
+                elif (
+                    class_id
+                    == PHONE_CLASS_ID
+                ):
+
+                    phones_raw.append(
+                        detection
+                    )
+
+        # ====================================================
+        # PERSON STABLE IDs
+        # ====================================================
+
+        persons: list[
+            dict[str, Any]
+        ] = []
+
+        reserved_person_ids: set[
+            str
+        ] = set()
+
+        for person in persons_raw:
+
+            stable_id, similarity = (
+                self.assign_person_id(
+                    frame,
+                    person["bbox"],
+                    person["track_id"],
+                    now,
+                    reserved_person_ids,
+                )
+            )
+
+            person["person_id"] = (
+                stable_id
+            )
+
+            person["reid_similarity"] = (
+                round(
+                    similarity,
+                    4,
+                )
+            )
+
+            persons.append(
+                person
+            )
+
+        # ====================================================
+        # ASSOCIATE WEAPONS TO PEOPLE
+        # ====================================================
+
+        def association_score(object_box, person_box):
+            iou = self.calculate_iou(object_box, person_box)
+            obj_center = self.box_center(object_box)
+            person_center = self.box_center(person_box)
+            dx = abs(obj_center[0] - person_center[0])
+            dy = abs(obj_center[1] - person_center[1])
+            pw = max(1.0, person_box[2] - person_box[0])
+            ph = max(1.0, person_box[3] - person_box[1])
+            center_distance = max(0.0, (dx / max(pw, 1.0)) + (dy / max(ph, 1.0)))
+            inside_region = self.object_belongs_to_person(object_box, person_box)
+            score = (iou * 0.65) + (0.35 if inside_region else 0.0) - min(center_distance * 0.5, 0.35)
+            return max(0.0, min(1.0, score))
+
+        associated_weapon_indices: set[
+            int
+        ] = set()
+
+        person_weapon_map: dict[
+            str,
+            list[dict[str, Any]],
+        ] = {
+            person["person_id"]: []
+            for person in persons
+        }
+
+        # ----------------------------------------------------
+        # For every weapon find the best person.
+        # We do NOT assign one weapon to multiple people.
+        # ----------------------------------------------------
+
+        for weapon_index, weapon in enumerate(
+            weapons_raw
+        ):
+
+            best_person_id = None
+
+            best_score = 0.0
+
+            for person in persons:
+
+                person_id = (
+                    person[
+                        "person_id"
+                    ]
                 )
 
-        # ----------------------------------------------------
-        # DRAW BASE FRAME
-        # ----------------------------------------------------
+                score = association_score(weapon["bbox"], person["bbox"])
+                if score < self.association_threshold:
+                    continue
+                if score > best_score:
+                    best_score = score
+                    best_person_id = person_id
+
+            if best_person_id is not None:
+
+                person_weapon_map[
+                    best_person_id
+                ].append(
+                    weapon
+                )
+
+                associated_weapon_indices.add(
+                    weapon_index
+                )
+
+        # ====================================================
+        # ASSOCIATE PHONES TO PEOPLE
+        # ====================================================
+
+        person_phone_map: dict[
+            str,
+            list[dict[str, Any]],
+        ] = {
+            person["person_id"]: []
+            for person in persons
+        }
+
+        for phone in phones_raw:
+
+            best_person_id = None
+
+            best_score = 0.0
+
+            for person in persons:
+
+                person_id = (
+                    person[
+                        "person_id"
+                    ]
+                )
+
+                center_inside = (
+                    self.object_belongs_to_person(
+                        phone["bbox"],
+                        person["bbox"],
+                    )
+                )
+
+                if not center_inside:
+                    continue
+
+                iou = (
+                    self.calculate_iou(
+                        phone["bbox"],
+                        person["bbox"],
+                    )
+                )
+
+                score = (
+                    iou * 0.70
+                    + 0.30
+                )
+
+                if score > best_score:
+
+                    best_score = score
+
+                    best_person_id = (
+                        person_id
+                    )
+
+            if best_person_id is not None:
+
+                person_phone_map[
+                    best_person_id
+                ].append(
+                    phone
+                )
 
         annotated = frame.copy()
 
-        # ----------------------------------------------------
-        # DRAW DETECTIONS
-        # ----------------------------------------------------
+        # ====================================================
+        # FINAL DETECTIONS
+        # ====================================================
 
-        for detection in detections:
+        final_detections: list[
+            dict[str, Any]
+        ] = []
+
+        threats = 0
+
+        # ====================================================
+        # PERSON RESULTS
+        # ====================================================
+
+        for person in persons:
+
+            person_id = (
+                person[
+                    "person_id"
+                ]
+            )
+
+            associated_weapons = (
+                person_weapon_map.get(
+                    person_id,
+                    [],
+                )
+            )
+
+            associated_phones = (
+                person_phone_map.get(
+                    person_id,
+                    [],
+                )
+            )
+
+            has_weapon = (
+                len(
+                    associated_weapons
+                )
+                > 0
+            )
+
+            has_phone = (
+                len(
+                    associated_phones
+                )
+                > 0
+            )
+
+            # ------------------------------------------------
+            # Temporal threat confirmation.
+            # ------------------------------------------------
+
+            confirmed_threat = (
+                self.update_threat_state(
+                    person_id,
+                    has_weapon,
+                )
+            )
+            threat_state = self.get_threat_state(has_weapon, confirmed_threat, len(associated_weapons))
+            current_event = self.event_state.get(person_id)
+            event_id = None
+            evidence_image = None
+            person_crop_path = None
+
+            if confirmed_threat and (current_event is None or not current_event.get("active", False)):
+                event_id = self._next_event_id(person_id)
+                self.event_state[person_id] = {"active": True, "event_id": event_id}
+            elif not confirmed_threat and current_event and current_event.get("active"):
+                self.event_state[person_id] = {"active": False, "event_id": current_event.get("event_id")}
+
+            if current_event is not None:
+                event_id = current_event.get("event_id") or event_id
+
+            if current_event is not None:
+                evidence_image = current_event.get("evidence_image") or evidence_image
+                person_crop_path = current_event.get("person_crop") or person_crop_path
+            # If a weapon is present in the current frame,
+            # this person is a threat candidate.
+            #
+            # The dashboard gets "threat_candidate" immediately,
+            # but "is_threat" becomes true after confirmation.
+            # ------------------------------------------------
+
+            weapon_confidence = max(
+                [
+                    float(
+                        weapon[
+                            "confidence"
+                        ]
+                    )
+                    for weapon
+                    in associated_weapons
+                ],
+                default=0.0,
+            )
+
+            phone_confidence = max(
+                [
+                    float(
+                        phone[
+                            "confidence"
+                        ]
+                    )
+                    for phone
+                    in associated_phones
+                ],
+                default=0.0,
+            )
+
+            if confirmed_threat:
+
+                threats += 1
+
+            final_person = {
+
+                "track_id":
+                    person["track_id"],
+
+                "person_id":
+                    person_id,
+
+                "class_id":
+                    PERSON_CLASS_ID,
+
+                "class_name":
+                    "person",
+
+                "confidence":
+                    person["confidence"],
+
+                "is_person":
+                    True,
+
+                "has_weapon":
+                    has_weapon,
+
+                "has_phone":
+                    has_phone,
+
+                "weapon_count":
+                    len(
+                        associated_weapons
+                    ),
+
+                "phone_count":
+                    len(
+                        associated_phones
+                    ),
+
+                "threat_candidate":
+                    has_weapon,
+
+                "is_threat":
+                    confirmed_threat,
+
+                "threat_state":
+                    threat_state,
+
+                "weapon_confidence":
+                    round(
+                        weapon_confidence,
+                        4,
+                    ),
+
+                "phone_confidence":
+                    round(
+                        phone_confidence,
+                        4,
+                    ),
+
+                "threat_confidence":
+                    round(
+                        weapon_confidence,
+                        4,
+                    ),
+
+                "reid_similarity":
+                    person[
+                        "reid_similarity"
+                    ],
+
+                "first_seen":
+                    round(
+                        float(
+                            self.person_memory[
+                                person_id
+                            ][
+                                "first_seen"
+                            ]
+                        ),
+                        3,
+                    ),
+
+                "last_seen":
+                    round(
+                        float(
+                            self.person_memory[
+                                person_id
+                            ][
+                                "last_seen"
+                            ]
+                        ),
+                        3,
+                    ),
+
+                "seen_count":
+                    int(
+                        self.person_memory[
+                            person_id
+                        ].get(
+                            "seen_count",
+                            0,
+                        )
+                    ),
+
+                "event_id":
+                    event_id,
+
+                "evidence_image":
+                    evidence_image,
+
+                "person_crop":
+                    person_crop_path,
+
+                "bbox":
+                    person["bbox"],
+            }
+
+            final_detections.append(
+                final_person
+            )
+
+        # ====================================================
+        # WEAPON RESULTS
+        # ====================================================
+
+        for weapon_index, weapon in enumerate(
+            weapons_raw
+        ):
+
+            weapon_id = self.get_weapon_id(
+                weapon[
+                    "track_id"
+                ]
+            )
+
+            associated = (
+                weapon_index
+                in associated_weapon_indices
+            )
+
+            associated_person_id = None
+
+            if associated:
+
+                for person_id, items in (
+                    person_weapon_map.items()
+                ):
+
+                    if weapon in items:
+
+                        associated_person_id = (
+                            person_id
+                        )
+
+                        break
+
+            weapon_result = {
+
+                "track_id":
+                    weapon["track_id"],
+
+                "weapon_id":
+                    weapon_id,
+
+                "class_id":
+                    WEAPON_CLASS_ID,
+
+                "class_name":
+                    "weapon",
+
+                "confidence":
+                    weapon["confidence"],
+
+                "is_person":
+                    False,
+
+                "is_threat":
+                    associated,
+
+                "associated_with_person":
+                    associated,
+
+                "associated_person_id":
+                    associated_person_id,
+
+                "bbox":
+                    weapon["bbox"],
+            }
+
+            final_detections.append(
+                weapon_result
+            )
+
+        # ====================================================
+        # PHONE RESULTS
+        # ====================================================
+
+        for phone in phones_raw:
+
+            phone_id = self.get_phone_id(
+                phone[
+                    "track_id"
+                ]
+            )
+
+            associated_person_id = None
+
+            for person_id, items in (
+                person_phone_map.items()
+            ):
+
+                if phone in items:
+
+                    associated_person_id = (
+                        person_id
+                    )
+
+                    break
+
+            phone_result = {
+
+                "track_id":
+                    phone["track_id"],
+
+                "phone_id":
+                    phone_id,
+
+                "class_id":
+                    PHONE_CLASS_ID,
+
+                "class_name":
+                    "phone",
+
+                "confidence":
+                    phone["confidence"],
+
+                "is_person":
+                    False,
+
+                # VERY IMPORTANT:
+                # Phone is NEVER a threat.
+                "is_threat":
+                    False,
+
+                "associated_with_person":
+                    associated_person_id
+                    is not None,
+
+                "associated_person_id":
+                    associated_person_id,
+
+                "bbox":
+                    phone["bbox"],
+            }
+
+            final_detections.append(
+                phone_result
+            )
+
+        # ====================================================
+        # DRAW
+        # ====================================================
+
+        annotated = frame.copy()
+
+        for detection in final_detections:
 
             x1, y1, x2, y2 = map(
                 int,
                 detection["bbox"],
             )
 
-            track_id = (
-                detection["track_id"]
+            class_name = detection[
+                "class_name"
+            ]
+
+            confidence = float(
+                detection[
+                    "confidence"
+                ]
             )
 
-            confidence = (
-                detection["confidence"]
+            is_person = bool(
+                detection.get(
+                    "is_person",
+                    False,
+                )
             )
 
-            class_name = (
-                detection["class_name"]
+            is_threat = bool(
+                detection.get(
+                    "is_threat",
+                    False,
+                )
             )
 
-            is_person = (
-                detection["is_person"]
-            )
+            # ------------------------------------------------
+            # Person
+            # ------------------------------------------------
 
-            is_threat = (
-                detection["is_threat"]
-            )
+            if is_person:
 
-            # ----------------------------------------------
-            # LABEL
-            # ----------------------------------------------
-
-            if is_threat:
-
-                if track_id is not None:
-                    label = (
-                        f"THREAT "
-                        f"T-{track_id:02d} "
-                        f"{confidence:.2f}"
-                    )
-                else:
-                    label = (
-                        f"THREAT "
-                        f"{confidence:.2f}"
-                    )
-
-                # OpenCV BGR
-                box_color = (
-                    70,
-                    80,
-                    220,
+                person_id = detection.get(
+                    "person_id",
+                    "UNKNOWN",
                 )
 
-            elif is_person:
+                has_weapon = bool(
+                    detection.get(
+                        "has_weapon",
+                        False,
+                    )
+                )
 
-                if track_id is not None:
+                threat_candidate = bool(
+                    detection.get(
+                        "threat_candidate",
+                        False,
+                    )
+                )
+
+                if is_threat:
+
                     label = (
                         f"PERSON "
-                        f"P-{track_id:02d} "
+                        f"{person_id} "
+                        f"[THREAT + WEAPON] "
                         f"{confidence:.2f}"
                     )
-                else:
+
+                    box_color = (
+                        70,
+                        80,
+                        220,
+                    )
+
+                elif threat_candidate:
+
                     label = (
                         f"PERSON "
+                        f"{person_id} "
+                        f"[WEAPON CHECKING] "
+                        f"{confidence:.2f}"
+                    )
+
+                    box_color = (
+                        0,
+                        165,
+                        255,
+                    )
+
+                else:
+
+                    label = (
+                        f"PERSON "
+                        f"{person_id} "
+                        f"{confidence:.2f}"
+                    )
+
+                    box_color = (
+                        70,
+                        145,
+                        225,
+                    )
+
+            # ------------------------------------------------
+            # Weapon
+            # ------------------------------------------------
+
+            elif class_name == "weapon":
+
+                weapon_id = detection.get(
+                    "weapon_id",
+                    "W-??",
+                )
+
+                associated_person_id = (
+                    detection.get(
+                        "associated_person_id"
+                    )
+                )
+
+                if associated_person_id:
+
+                    label = (
+                        f"WEAPON "
+                        f"{weapon_id} "
+                        f"{confidence:.2f} "
+                        f"[{associated_person_id}]"
+                    )
+
+                    box_color = (
+                        70,
+                        80,
+                        220,
+                    )
+
+                else:
+
+                    label = (
+                        f"WEAPON "
+                        f"{weapon_id} "
+                        f"{confidence:.2f}"
+                    )
+
+                    box_color = (
+                        0,
+                        165,
+                        255,
+                    )
+
+            # ------------------------------------------------
+            # Phone
+            # ------------------------------------------------
+
+            elif class_name == "phone":
+
+                phone_id = detection.get(
+                    "phone_id",
+                    "PH-??",
+                )
+
+                associated_person_id = (
+                    detection.get(
+                        "associated_person_id"
+                    )
+                )
+
+                if associated_person_id:
+
+                    label = (
+                        f"PHONE "
+                        f"{phone_id} "
+                        f"{confidence:.2f} "
+                        f"[{associated_person_id}]"
+                    )
+
+                else:
+
+                    label = (
+                        f"PHONE "
+                        f"{phone_id} "
                         f"{confidence:.2f}"
                     )
 
                 box_color = (
-                    70,
-                    145,
-                    225,
+                    60,
+                    180,
+                    75,
                 )
+
+            # ------------------------------------------------
+            # Unknown
+            # ------------------------------------------------
 
             else:
 
                 label = (
-                    f"{class_name} "
+                    f"{class_name.upper()} "
                     f"{confidence:.2f}"
                 )
 
@@ -406,35 +2430,46 @@ class ThreatDetector:
                     130,
                 )
 
-            # ----------------------------------------------
+            # =================================================
             # BOX
-            # ----------------------------------------------
+            # =================================================
 
             cv2.rectangle(
                 annotated,
-                (x1, y1),
-                (x2, y2),
+                (
+                    x1,
+                    y1,
+                ),
+                (
+                    x2,
+                    y2,
+                ),
                 box_color,
                 2,
             )
 
-            # ----------------------------------------------
-            # LABEL SIZE
-            # ----------------------------------------------
+            # =================================================
+            # LABEL
+            # =================================================
 
-            font = cv2.FONT_HERSHEY_SIMPLEX
+            font = (
+                cv2.FONT_HERSHEY_SIMPLEX
+            )
 
             font_scale = 0.50
+
             thickness = 1
 
             (
                 text_width,
                 text_height,
-            ), baseline = cv2.getTextSize(
-                label,
-                font,
-                font_scale,
-                thickness,
+            ), baseline = (
+                cv2.getTextSize(
+                    label,
+                    font,
+                    font_scale,
+                    thickness,
+                )
             )
 
             label_bottom = max(
@@ -448,10 +2483,6 @@ class ThreatDetector:
                 - 10
             )
 
-            # ----------------------------------------------
-            # LABEL BACKGROUND
-            # ----------------------------------------------
-
             cv2.rectangle(
                 annotated,
                 (
@@ -459,18 +2490,14 @@ class ThreatDetector:
                     label_top,
                 ),
                 (
-                    x1 +
-                    text_width +
-                    8,
+                    x1
+                    + text_width
+                    + 8,
                     label_bottom,
                 ),
                 box_color,
                 -1,
             )
-
-            # ----------------------------------------------
-            # TEXT
-            # ----------------------------------------------
 
             cv2.putText(
                 annotated,
@@ -490,6 +2517,49 @@ class ThreatDetector:
                 cv2.LINE_AA,
             )
 
+        for person in persons:
+            person_id = person.get("person_id")
+            if not person_id:
+                continue
+            current_event = self.event_state.get(person_id)
+            if not current_event or not current_event.get("active"):
+                continue
+            if current_event.get("event_id") is None:
+                continue
+            weapon_id = None
+            weapon_confidence_value = 0.0
+            associated_weapons = person_weapon_map.get(person_id, [])
+            if associated_weapons:
+                weapon_item = associated_weapons[0]
+                weapon_id = self.get_weapon_id(weapon_item.get("track_id"))
+                weapon_confidence_value = float(weapon_item.get("confidence", 0.0))
+            person_crop = self.crop_box(frame, person["bbox"])
+            if person_crop is None:
+                continue
+            event_dir = PROJECT_ROOT / "events" / time.strftime("%Y-%m-%d") / current_event["event_id"]
+            event_dir.mkdir(parents=True, exist_ok=True)
+            full_frame_path = event_dir / "full_frame.jpg"
+            person_crop_path = event_dir / "person_crop.jpg"
+            event_json_path = event_dir / "event.json"
+            cv2.imwrite(str(full_frame_path), annotated)
+            cv2.imwrite(str(person_crop_path), person_crop)
+            event_payload = {
+                "event_id": current_event["event_id"],
+                "person_id": person_id,
+                "weapon_id": weapon_id,
+                "person_confidence": round(float(person["confidence"]), 4),
+                "weapon_confidence": round(float(weapon_confidence_value), 4),
+                "first_seen": round(float(self.person_memory.get(person_id, {}).get("first_seen", time.time())), 3),
+                "confirmed_at": round(float(time.time()), 3),
+                "last_seen": round(float(self.person_memory.get(person_id, {}).get("last_seen", time.time())), 3),
+                "full_frame": str(full_frame_path.relative_to(PROJECT_ROOT)),
+                "person_crop": str(person_crop_path.relative_to(PROJECT_ROOT)),
+                "threat_state": "CONFIRMED_THREAT",
+            }
+            event_json_path.write_text(json.dumps(event_payload, indent=2), encoding="utf-8")
+            self.event_state[person_id]["evidence_image"] = str(full_frame_path.relative_to(PROJECT_ROOT))
+            self.event_state[person_id]["person_crop"] = str(person_crop_path.relative_to(PROJECT_ROOT))
+
         # ====================================================
         # TIMING
         # ====================================================
@@ -497,30 +2567,56 @@ class ThreatDetector:
         processing_ms = (
             time.perf_counter()
             - started
-        ) * 1000
+        ) * 1000.0
+
+        # ====================================================
+        # RETURN
+        # ====================================================
 
         return {
-            "frame": annotated,
-            "persons": persons,
-            "threats": threats,
-            "objects": len(
-                detections
-            ),
-            "highest_confidence": round(
-                highest_confidence,
-                4,
-            ),
-            "processing_ms": round(
-                processing_ms,
-                2,
-            ),
-            "detections": detections,
-            "model": self.model_name,
-            "device": (
-                "CUDA"
-                if torch.cuda.is_available()
-                else "CPU"
-            ),
+
+            "frame":
+                annotated,
+
+            "persons":
+                len(persons),
+
+            "weapons":
+                len(weapons_raw),
+
+            "phones":
+                len(phones_raw),
+
+            "threats":
+                threats,
+
+            "objects":
+                len(final_detections),
+
+            "highest_confidence":
+                round(
+                    highest_confidence,
+                    4,
+                ),
+
+            "processing_ms":
+                round(
+                    processing_ms,
+                    2,
+                ),
+
+            "detections":
+                final_detections,
+
+            "model":
+                self.model_name,
+
+            "device":
+                (
+                    "CUDA"
+                    if torch.cuda.is_available()
+                    else "CPU"
+                ),
         }
 
 
