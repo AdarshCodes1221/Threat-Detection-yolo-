@@ -1,0 +1,8 @@
+train: E:/Adarsh/Threat-Detection-yolo-/data/weapons_v6_temp/train/images
+val: E:/Adarsh/Threat-Detection-yolo-/data/weapons_v6_temp/valid/images
+test: E:/Adarsh/Threat-Detection-yolo-/data/weapons_v6_temp/test/images
+
+nc: 2
+names:
+  0: person
+  1: weapon
