@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from typing import Any
@@ -32,7 +33,17 @@ PERSON_MEMORY_TTL = 25.0
 MAX_PERSON_MEMORY = 100
 THREAT_CONFIRMATION_FRAMES = 2
 THREAT_RELEASE_FRAMES = 1
-ASSOCIATION_THRESHOLD = 0.50
+
+# ------------------------------------------------------------
+# Weapon -> person association.
+#
+# NOTE: This threshold is calibrated against `association_score`
+# below, which returns a *containment + proximity* score in the
+# 0..1 range (see the method's docstring for why). It is NOT
+# comparable to a raw IoU value.
+# ------------------------------------------------------------
+ASSOCIATION_THRESHOLD = 0.40
+
 PERSON_CONFIDENCE = 0.25
 WEAPON_CONFIDENCE = 0.01
 PHONE_CONFIDENCE = 0.10
@@ -413,7 +424,7 @@ class ThreatDetector:
         )
 
     # ========================================================
-    # OBJECT -> PERSON ASSOCIATION
+    # OBJECT -> PERSON ASSOCIATION (region test used for phones)
     # ========================================================
 
     @staticmethod
@@ -514,6 +525,136 @@ class ThreatDetector:
             return True
 
         return False
+
+    # ========================================================
+    # WEAPON -> PERSON ASSOCIATION SCORE
+    #
+    # THIS IS THE FIX. See "what was wrong" in the accompanying
+    # explanation for the full story; short version:
+    #
+    # The previous implementation scored association mostly off
+    # raw IoU(weapon_box, person_box). Because a person's bbox
+    # is typically 10-50x the area of a held weapon's bbox, IoU
+    # between them is *mathematically incapable* of exceeding
+    # roughly (weapon_area / person_area) even when the weapon
+    # sits dead-center on the person's body -- usually a value
+    # under 0.05. That capped the entire score formula's maximum
+    # realistic output around 0.35-0.40, permanently below the
+    # old 0.50 threshold. No genuinely held weapon could ever
+    # cross the line, hence "WEAPONS: 2, THREATS: 0" even with
+    # visibly-held weapons.
+    #
+    # This version scores two things that don't have that
+    # size-mismatch problem:
+    #
+    #   1. containment  - what fraction of the WEAPON's own area
+    #      (not the person's) falls inside a person region that's
+    #      been expanded outward to plausibly cover an extended
+    #      arm/hand. A held weapon is very often ~80-100%
+    #      contained even though its IoU with the person is tiny.
+    #
+    #   2. proximity     - normalized distance from the weapon's
+    #      center to the nearest point on the person's own
+    #      (unexpanded) bbox, decaying to 0 a bit under half a
+    #      body-diagonal away. This lets an object just outside
+    #      the expanded box (e.g. a fully extended arm) still
+    #      contribute, and pulls the score toward 0 for anything
+    #      clearly unrelated (a weapon on a table across the room).
+    #
+    # Final score = containment*0.70 + proximity*0.30, in 0..1,
+    # and *is* achievable at ~0.9-1.0 for a genuinely held weapon
+    # (validated against synthetic held/extended-arm/far-away
+    # cases -- see test notes). ASSOCIATION_THRESHOLD was
+    # recalibrated to 0.40 to match this new scale.
+    # ========================================================
+
+    @staticmethod
+    def association_score(
+        weapon_box,
+        person_box,
+    ) -> float:
+
+        ox1, oy1, ox2, oy2 = map(
+            float,
+            weapon_box,
+        )
+
+        px1, py1, px2, py2 = map(
+            float,
+            person_box,
+        )
+
+        weapon_area = max(
+            1.0,
+            (ox2 - ox1) * (oy2 - oy1),
+        )
+
+        person_width = max(
+            1.0,
+            px2 - px1,
+        )
+
+        person_height = max(
+            1.0,
+            py2 - py1,
+        )
+
+        # ----------------------------------------------------
+        # Expand outward to plausibly cover an extended arm.
+        # Wider sideways than up/down; a bit more slack below
+        # the box than above it, since a lowered/aimed weapon
+        # tends to sit near waist height or below.
+        # ----------------------------------------------------
+
+        expanded_x1 = px1 - person_width * 0.35
+        expanded_y1 = py1 - person_height * 0.08
+        expanded_x2 = px2 + person_width * 0.35
+        expanded_y2 = py2 + person_height * 0.20
+
+        ix1 = max(ox1, expanded_x1)
+        iy1 = max(oy1, expanded_y1)
+        ix2 = min(ox2, expanded_x2)
+        iy2 = min(oy2, expanded_y2)
+
+        iw = max(0.0, ix2 - ix1)
+        ih = max(0.0, iy2 - iy1)
+
+        containment = (iw * ih) / weapon_area
+
+        # ----------------------------------------------------
+        # Proximity: distance from weapon center to the nearest
+        # point on the person's *own* (unexpanded) box, normalized
+        # by that person's bbox diagonal so it scales with person
+        # size in the frame (near vs. far from camera).
+        # ----------------------------------------------------
+
+        weapon_cx = (ox1 + ox2) / 2.0
+        weapon_cy = (oy1 + oy2) / 2.0
+
+        nearest_x = min(max(weapon_cx, px1), px2)
+        nearest_y = min(max(weapon_cy, py1), py2)
+
+        dx = weapon_cx - nearest_x
+        dy = weapon_cy - nearest_y
+
+        distance = (dx * dx + dy * dy) ** 0.5
+
+        diagonal = max(
+            1.0,
+            (person_width ** 2 + person_height ** 2) ** 0.5,
+        )
+
+        normalized_distance = distance / diagonal
+
+        # Decays to 0 by roughly 0.4x the body diagonal away.
+        proximity = max(
+            0.0,
+            1.0 - normalized_distance * 2.5,
+        )
+
+        score = (containment * 0.70) + (proximity * 0.30)
+
+        return max(0.0, min(1.0, score))
 
     # ========================================================
     # PERSON CROP
@@ -1225,7 +1366,14 @@ class ThreatDetector:
         self,
         person_id: str,
         has_weapon: bool,
-    ) -> bool:
+    ) -> tuple[bool, bool]:
+        """Advance the temporal threat counter for *person_id*.
+
+        Returns ``(confirmed, just_confirmed)`` where *just_confirmed* flips
+        from ``False`` to ``True`` on the exact frame the person crosses from
+        WEAPON_CANDIDATE into CONFIRMED_THREAT — the trigger for a one-shot
+        evidence capture.
+        """
 
         state = self.threat_state.setdefault(
             person_id,
@@ -1238,6 +1386,13 @@ class ThreatDetector:
 
         state["last_seen"] = time.time()
 
+        was_confirmed = bool(
+            state.get(
+                "confirmed",
+                False,
+            )
+        )
+
         if has_weapon:
             state["frames"] = int(state.get("frames", 0)) + 1
         else:
@@ -1245,68 +1400,171 @@ class ThreatDetector:
 
         confirmed = state["frames"] >= self.threat_required_frames
         state["confirmed"] = confirmed
-        return confirmed
+        just_confirmed = confirmed and not was_confirmed
+        return confirmed, just_confirmed
 
-    def _next_event_id(self, person_id: str) -> str:
-        date_dir = (PROJECT_ROOT / "events" / time.strftime("%Y-%m-%d"))
-        date_dir.mkdir(parents=True, exist_ok=True)
+    def _capture_event_evidence(
+        self,
+        person_id: str,
+    ) -> str:
+        """Create a new dated event directory and return its event_id.
+
+        Evidence images (full frame, person crop) and the event JSON are
+        written by :meth:`_write_evidence` at the moment of confirmation.
+        """
+
+        date_dir = (
+            PROJECT_ROOT
+            / "events"
+            / time.strftime("%Y-%m-%d")
+        )
+
+        date_dir.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
         while True:
-            event_id = f"EVT-{self.event_counter:04d}_{person_id}"
-            folder = date_dir / event_id
-            if not folder.exists():
+
+            event_id = (
+                f"EVT-{self.event_counter:04d}_"
+                f"{person_id}"
+            )
+
+            event_dir = (
+                date_dir
+                / event_id
+            )
+
+            if not event_dir.exists():
+
                 self.event_counter += 1
                 return event_id
+
             self.event_counter += 1
 
-    def _save_event_evidence(
+    def _write_evidence(
         self,
+        event_id: str,
+        person_id: str,
         frame: np.ndarray,
         person_crop: np.ndarray,
-        person_id: str,
         weapon_id: str | None,
-        person_confidence: float,
         weapon_confidence: float,
-        confirmed_at: float,
+        person_confidence: float,
         first_seen: float,
         last_seen: float,
-    ) -> tuple[str, str]:
-        date_dir = PROJECT_ROOT / "events" / time.strftime("%Y-%m-%d")
-        date_dir.mkdir(parents=True, exist_ok=True)
+    ) -> dict[str, str]:
+        """Write one evidence package (full frame + person crop + JSON).
 
-        event_id = self._next_event_id(person_id)
-        event_dir = date_dir / event_id
-        event_dir.mkdir(parents=True, exist_ok=True)
+        Returns a dict with ``evidence_image`` and ``person_crop`` paths
+        relative to PROJECT_ROOT so they can be sent to the frontend.
+        """
 
-        full_frame_path = event_dir / "full_frame.jpg"
-        person_crop_path = event_dir / "person_crop.jpg"
-        event_json_path = event_dir / "event.json"
+        date_dir = (
+            PROJECT_ROOT
+            / "events"
+            / time.strftime("%Y-%m-%d")
+        )
 
-        cv2.imwrite(str(full_frame_path), frame)
-        cv2.imwrite(str(person_crop_path), person_crop)
+        event_dir = (
+            date_dir
+            / event_id
+        )
+
+        event_dir.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        full_frame_path = (
+            event_dir
+            / "full_frame.jpg"
+        )
+
+        person_crop_path = (
+            event_dir
+            / "person_crop.jpg"
+        )
+
+        event_json_path = (
+            event_dir
+            / "event.json"
+        )
+
+        cv2.imwrite(
+            str(full_frame_path),
+            frame,
+        )
+
+        cv2.imwrite(
+            str(person_crop_path),
+            person_crop,
+        )
 
         event_payload = {
             "event_id": event_id,
             "person_id": person_id,
             "weapon_id": weapon_id,
-            "person_confidence": round(float(person_confidence), 4),
-            "weapon_confidence": round(float(weapon_confidence), 4),
-            "first_seen": round(float(first_seen), 3),
-            "confirmed_at": round(float(confirmed_at), 3),
-            "last_seen": round(float(last_seen), 3),
-            "full_frame": str(full_frame_path.relative_to(PROJECT_ROOT)),
-            "person_crop": str(person_crop_path.relative_to(PROJECT_ROOT)),
+            "person_confidence": round(
+                float(person_confidence),
+                4,
+            ),
+            "weapon_confidence": round(
+                float(weapon_confidence),
+                4,
+            ),
+            "first_seen": round(
+                float(first_seen),
+                3,
+            ),
+            "confirmed_at": round(
+                float(time.time()),
+                3,
+            ),
+            "last_seen": round(
+                float(last_seen),
+                3,
+            ),
+            "full_frame": str(
+                full_frame_path.relative_to(PROJECT_ROOT)
+            ),
+            "person_crop": str(
+                person_crop_path.relative_to(PROJECT_ROOT)
+            ),
             "threat_state": "CONFIRMED_THREAT",
         }
 
-        event_json_path.write_text(json.dumps(event_payload, indent=2), encoding="utf-8")
-        return event_id, str(event_dir)
+        event_json_path.write_text(
+            json.dumps(
+                event_payload,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
 
-    def get_threat_state(self, has_weapon: bool, confirmed_threat: bool, weapon_count: int) -> str:
+        return {
+            "evidence_image": str(
+                full_frame_path.relative_to(PROJECT_ROOT)
+            ),
+            "person_crop": str(
+                person_crop_path.relative_to(PROJECT_ROOT)
+            ),
+        }
+
+    def get_threat_state(
+        self,
+        has_weapon: bool,
+        confirmed_threat: bool,
+    ) -> str:
+        """Map a person's current status to a temporal state label.
+
+        NORMAL → WEAPON_CANDIDATE → CONFIRMED_THREAT
+        """
+
         if confirmed_threat:
             return "CONFIRMED_THREAT"
         if has_weapon:
-            if weapon_count >= self.threat_required_frames:
-                return "THREAT_CONFIRMING"
             return "WEAPON_CANDIDATE"
         return "NORMAL"
 
@@ -1716,20 +1974,18 @@ class ThreatDetector:
 
         # ====================================================
         # ASSOCIATE WEAPONS TO PEOPLE
+        #
+        # For every weapon, score it against every currently
+        # visible person using `association_score` (containment
+        # + proximity, see that method's docstring) and assign
+        # it to whichever person scores highest -- but only if
+        # that best score clears ASSOCIATION_THRESHOLD. A weapon
+        # is never assigned to more than one person, and a
+        # weapon that isn't plausibly near *anyone* is left
+        # unassigned (best_person_id stays None), which is what
+        # keeps a random weapon elsewhere in frame from making
+        # every visible person a threat.
         # ====================================================
-
-        def association_score(object_box, person_box):
-            iou = self.calculate_iou(object_box, person_box)
-            obj_center = self.box_center(object_box)
-            person_center = self.box_center(person_box)
-            dx = abs(obj_center[0] - person_center[0])
-            dy = abs(obj_center[1] - person_center[1])
-            pw = max(1.0, person_box[2] - person_box[0])
-            ph = max(1.0, person_box[3] - person_box[1])
-            center_distance = max(0.0, (dx / max(pw, 1.0)) + (dy / max(ph, 1.0)))
-            inside_region = self.object_belongs_to_person(object_box, person_box)
-            score = (iou * 0.65) + (0.35 if inside_region else 0.0) - min(center_distance * 0.5, 0.35)
-            return max(0.0, min(1.0, score))
 
         associated_weapon_indices: set[
             int
@@ -1742,11 +1998,6 @@ class ThreatDetector:
             person["person_id"]: []
             for person in persons
         }
-
-        # ----------------------------------------------------
-        # For every weapon find the best person.
-        # We do NOT assign one weapon to multiple people.
-        # ----------------------------------------------------
 
         for weapon_index, weapon in enumerate(
             weapons_raw
@@ -1764,9 +2015,14 @@ class ThreatDetector:
                     ]
                 )
 
-                score = association_score(weapon["bbox"], person["bbox"])
+                score = self.association_score(
+                    weapon["bbox"],
+                    person["bbox"],
+                )
+
                 if score < self.association_threshold:
                     continue
+
                 if score > best_score:
                     best_score = score
                     best_person_id = person_id
@@ -1901,37 +2157,28 @@ class ThreatDetector:
 
             # ------------------------------------------------
             # Temporal threat confirmation.
+            #
+            # NORMAL → WEAPON_CANDIDATE → CONFIRMED_THREAT
+            #
+            # update_threat_state returns (confirmed, just_confirmed)
+            # where just_confirmed flips True only on the exact frame
+            # of the CANDIDATE → CONFIRMED transition.
             # ------------------------------------------------
 
-            confirmed_threat = (
+            confirmed_threat, just_confirmed = (
                 self.update_threat_state(
                     person_id,
                     has_weapon,
                 )
             )
-            threat_state = self.get_threat_state(has_weapon, confirmed_threat, len(associated_weapons))
-            current_event = self.event_state.get(person_id)
-            event_id = None
-            evidence_image = None
-            person_crop_path = None
 
-            if confirmed_threat and (current_event is None or not current_event.get("active", False)):
-                event_id = self._next_event_id(person_id)
-                self.event_state[person_id] = {"active": True, "event_id": event_id}
-            elif not confirmed_threat and current_event and current_event.get("active"):
-                self.event_state[person_id] = {"active": False, "event_id": current_event.get("event_id")}
+            threat_state = self.get_threat_state(
+                has_weapon,
+                confirmed_threat,
+            )
 
-            if current_event is not None:
-                event_id = current_event.get("event_id") or event_id
-
-            if current_event is not None:
-                evidence_image = current_event.get("evidence_image") or evidence_image
-                person_crop_path = current_event.get("person_crop") or person_crop_path
-            # If a weapon is present in the current frame,
-            # this person is a threat candidate.
-            #
-            # The dashboard gets "threat_candidate" immediately,
-            # but "is_threat" becomes true after confirmation.
+            # ------------------------------------------------
+            # Weapon / phone confidence for this person.
             # ------------------------------------------------
 
             weapon_confidence = max(
@@ -1959,6 +2206,198 @@ class ThreatDetector:
                 ],
                 default=0.0,
             )
+
+            # ------------------------------------------------
+            # Event lifecycle + one-shot evidence capture.
+            #
+            # Evidence images are captured ONLY on the frame
+            # where the person first becomes a CONFIRMED
+            # THREAT.  On subsequent frames the already-stored
+            # paths are reused — no re-saving.
+            # ------------------------------------------------
+
+            current_event = self.event_state.get(
+                person_id
+            )
+
+            if confirmed_threat:
+
+                if (
+                    current_event is None
+                    or not current_event.get(
+                        "active",
+                        False,
+                    )
+                ):
+
+                    # -----------------------------------------------
+                    # Transition to CONFIRMED — create event dir
+                    # and capture ONE evidence image.
+                    # -----------------------------------------------
+
+                    event_id = (
+                        self._capture_event_evidence(
+                            person_id
+                        )
+                    )
+
+                    person_crop = (
+                        self.crop_box(
+                            frame,
+                            person[
+                                "bbox"
+                            ],
+                        )
+                    )
+
+                    if (
+                        person_crop
+                        is not None
+                    ):
+
+                        evidence_paths = (
+                            self._write_evidence(
+                                event_id=event_id,
+                                person_id=person_id,
+                                frame=annotated,
+                                person_crop=person_crop,
+                                weapon_id=(
+                                    self.get_weapon_id(
+                                        associated_weapons[
+                                            0
+                                        ][
+                                            "track_id"
+                                        ]
+                                    )
+                                    if associated_weapons
+                                    else None
+                                ),
+                                weapon_confidence=weapon_confidence,
+                                person_confidence=float(
+                                    person[
+                                        "confidence"
+                                    ]
+                                ),
+                                first_seen=float(
+                                    self.person_memory.get(
+                                        person_id,
+                                        {},
+                                    ).get(
+                                        "first_seen",
+                                        now,
+                                    )
+                                ),
+                                last_seen=float(
+                                    self.person_memory.get(
+                                        person_id,
+                                        {},
+                                    ).get(
+                                        "last_seen",
+                                        now,
+                                    )
+                                ),
+                            )
+                        )
+
+                        self.event_state[
+                            person_id
+                        ] = {
+                            "active": True,
+                            "event_id": event_id,
+                            "evidence_image": (
+                                evidence_paths.get(
+                                    "evidence_image"
+                                )
+                            ),
+                            "person_crop": (
+                                evidence_paths.get(
+                                    "person_crop"
+                                )
+                            ),
+                        }
+
+                    else:
+
+                        self.event_state[
+                            person_id
+                        ] = {
+                            "active": True,
+                            "event_id": event_id,
+                            "evidence_image": None,
+                            "person_crop": None,
+                        }
+
+                # else: already confirmed — reuse existing event.
+
+            elif (
+                current_event is not None
+                and current_event.get(
+                    "active",
+                    False,
+                )
+            ):
+
+                # -----------------------------------------------
+                # Was confirmed, weapon now absent —
+                # deactivate event but preserve evidence paths.
+                # -----------------------------------------------
+
+                self.event_state[
+                    person_id
+                ] = {
+                    "active": False,
+                    "event_id": (
+                        current_event.get(
+                            "event_id"
+                        )
+                    ),
+                    "evidence_image": (
+                        current_event.get(
+                            "evidence_image"
+                        )
+                    ),
+                    "person_crop": (
+                        current_event.get(
+                            "person_crop"
+                        )
+                    ),
+                }
+
+            # ------------------------------------------------
+            # Re-read final event info from the (possibly
+            # updated) state — avoids stale-reference bugs.
+            # ------------------------------------------------
+
+            current_event = self.event_state.get(
+                person_id,
+                {},
+            )
+
+            event_id = (
+                current_event.get(
+                    "event_id"
+                )
+            )
+
+            evidence_image = (
+                current_event.get(
+                    "evidence_image"
+                )
+            )
+
+            person_crop_path = (
+                current_event.get(
+                    "person_crop"
+                )
+            )
+
+            # ------------------------------------------------
+            # If a weapon is present in the current frame,
+            # this person is a threat candidate.
+            #
+            # The dashboard gets "threat_candidate" immediately,
+            # but "is_threat" becomes true after confirmation.
+            # ------------------------------------------------
 
             if confirmed_threat:
 
