@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use this software or benchmark artifacts in your research, please cite it as below."
+authors:
+  - family-names: "Jha"
+    given-names: "Adarsh"
+title: "Real-Time Threat Detection & Contextual Person-Weapon Association using YOLO11 and Spatial-Temporal Verification"
+version: 1.0.0
+date-released: 2026-08-30
+url: "https://github.com/AdarshCodes1221/Threat-Detection-yolo-"
+repository-code: "https://github.com/AdarshCodes1221/Threat-Detection-yolo-"
+keywords:
+  - "threat-detection"
+  - "yolo11"
+  - "computer-vision"
+  - "deep-learning"
+  - "multi-object-tracking"
+  - "re-identification"
+  - "spatial-temporal-modeling"
+  - "fastapi"
+  - "react"
+license: AGPL-3.0

@@ -41,6 +41,8 @@ def main() -> int:
             errors.append(f"Missing required file: {relative}")
 
     for markdown in ROOT.rglob("*.md"):
+        if any(part in ("node_modules", ".venv", ".git", ".cache") for part in markdown.parts):
+            continue
         text = markdown.read_text(encoding="utf-8")
         references = LINK_PATTERN.findall(text) + HTML_REFERENCE_PATTERN.findall(text)
         for raw_target in references:
